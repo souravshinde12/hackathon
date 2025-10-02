@@ -1,0 +1,645 @@
+---
+title: "DataThon"
+output: html_document
+date: "2025-10-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+# install.packages(c(
+#   "readr","dplyr","tidyr","stringr","lubridate","ggplot2",
+#   "tsibble","fable","fabletools","naniar","visdat","corrplot","hexbin","zoo", "fabletools"
+# ))
+set.seed(42)
+sessionInfo()
+
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(lubridate)
+library(ggplot2)
+library(tsibble)
+library(fable)
+library(fabletools)
+library(naniar)
+library(visdat)
+library(corrplot)
+library(hexbin)
+library(zoo)
+```
+
+
+```{r}
+# Read once; timestamp is ISO (e.g. 2021-01-01 00:00:00)
+df <- readr::read_csv("dynamic_supply_chain_logistics_dataset.csv",
+                      col_types = cols(timestamp = col_character()))
+
+# Parse timestamp to POSIXct UTC
+df <- df %>%
+  mutate(timestamp = ymd_hms(timestamp, tz = "UTC"))
+
+# Structure overview
+dim(df)                 # rows, columns
+str(df)                 # datatypes
+summary(df$shipping_costs)  # quick look at target
+range(df$timestamp)     # time span loaded
+anyNA(df)               # any missing values?
+```
+
+
+```{r}
+na_count <- colSums(is.na(df))
+na_pct   <- colMeans(is.na(df)) * 100
+data.frame(variable = names(na_count), NAs = na_count, pct = round(na_pct,2)) %>%
+  arrange(desc(pct))
+```
+
+
+```{r}
+# Visual missingness (variables and structure)
+gg_miss_var(df) + labs(title = "Missing values per variable")
+vis_dat(df)
+```
+
+
+```{r}
+# Visual missingness (variables and structure)
+# Enrich with time parts
+df_time <- df %>%
+  mutate(date = as.Date(timestamp),
+         hour = hour(timestamp),
+         wday = wday(timestamp, label = TRUE, week_start = 1),
+         week = isoweek(timestamp),
+         month = month(timestamp, label = TRUE))
+
+# Daily aggregation (keep key drivers)
+df_daily <- df_time %>%
+  group_by(date, risk_classification) %>%
+  summarise(
+    shipping_costs = sum(shipping_costs, na.rm = TRUE),
+    delivery_time_deviation = mean(delivery_time_deviation, na.rm = TRUE),
+    traffic_congestion_level = mean(traffic_congestion_level, na.rm = TRUE),
+    port_congestion_level    = mean(port_congestion_level, na.rm = TRUE),
+    weather_condition_severity = mean(weather_condition_severity, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# NA counts after aggregation
+colSums(is.na(df))
+colSums(is.na(df_daily))
+```
+
+
+```{r}
+# Histograms / boxplots / violins
+ggplot(df, aes(shipping_costs)) +
+  geom_histogram(bins = 40) +
+  labs(title = "Distribution of Shipping Costs")
+```
+
+
+```{r}
+ggplot(df, aes(risk_classification, shipping_costs, fill = risk_classification)) +
+  geom_boxplot() +
+  labs(title = "Shipping Costs by Risk Classification")
+```
+
+
+```{r}
+ggplot(df, aes(risk_classification, shipping_costs, fill = risk_classification)) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_boxplot(width = 0.15, outlier.alpha = 0.3) +
+  labs(title = "Distribution of Shipping Costs by Risk")
+```
+
+
+```{r}
+ggplot(df, aes(risk_classification, delivery_time_deviation, fill = risk_classification)) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_boxplot(width = 0.15, outlier.alpha = 0.3) +
+  labs(title = "Delivery Time Deviation by Risk")
+```
+
+
+```{r}
+ggplot(df_daily, aes(date, shipping_costs, color = risk_classification)) +
+  geom_line() +
+  labs(title = "Daily Shipping Costs by Risk Class", x = "Date", y = "Total Cost")
+```
+
+
+```{r}
+
+ggplot(df_daily, aes(date, delivery_time_deviation, color = risk_classification)) +
+  geom_line() +
+  labs(title = "Daily Delivery Time Deviation by Risk Class", x = "Date", y = "Deviation (hours)")
+```
+
+
+```{r}
+# Scatter + smooth: costs vs traffic/port; deviation vs weather
+ggplot(df_daily, aes(traffic_congestion_level, shipping_costs, color = risk_classification)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(se = FALSE) +
+  labs(title = "Shipping Cost vs Traffic Congestion")
+```
+
+
+```{r}
+ggplot(df_daily, aes(port_congestion_level, shipping_costs, color = risk_classification)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(se = FALSE) +
+  labs(title = "Shipping Cost vs Port Congestion")
+
+```
+
+```{r}
+ggplot(df_daily, aes(weather_condition_severity, delivery_time_deviation, color = risk_classification)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(se = FALSE) +
+  labs(title = "Delivery Deviation vs Weather Severity")
+```
+
+```{r}
+df_hourly <- df_time %>%
+  group_by(hour, risk_classification) %>%
+  summarise(shipping_costs = mean(shipping_costs, na.rm = TRUE),
+            delivery_time_deviation = mean(delivery_time_deviation, na.rm = TRUE),
+            .groups = "drop")
+```
+
+```{r}
+ggplot(df_hourly, aes(hour, shipping_costs, color = risk_classification)) +
+  geom_line() + labs(title = "Avg Shipping Cost by Hour")
+```
+
+```{r}
+
+ggplot(df_hourly, aes(hour, delivery_time_deviation, color = risk_classification)) +
+  geom_line() + labs(title = "Avg Delivery Deviation by Hour")
+```
+
+```{r}
+df_wday <- df_time %>%
+  group_by(wday, risk_classification) %>%
+  summarise(shipping_costs = mean(shipping_costs, na.rm = TRUE),
+            delivery_time_deviation = mean(delivery_time_deviation, na.rm = TRUE),
+            .groups = "drop")
+```
+
+```{r}
+ggplot(df_wday, aes(wday, shipping_costs, fill = risk_classification)) +
+  geom_col(position = "dodge") + labs(title = "Avg Shipping Cost by Weekday")
+```
+
+```{r}
+ggplot(df_wday, aes(wday, delivery_time_deviation, fill = risk_classification)) +
+  geom_col(position = "dodge") + labs(title = "Avg Delivery Deviation by Weekday")
+```
+
+```{r}
+df_calendar <- df_time %>%
+  group_by(week = isoweek(date), wday, risk_classification) %>%
+  summarise(cost = mean(shipping_costs, na.rm = TRUE), .groups = "drop")
+```
+
+
+```{r}
+ggplot(df_calendar, aes(week, wday, fill = cost)) +
+  geom_tile() +
+  facet_wrap(~ risk_classification, ncol = 1) +
+  labs(title = "Calendar Heatmap: Shipping Cost", x = "ISO Week", y = NULL)
+```
+
+```{r}
+
+ggplot(df_daily, aes(traffic_congestion_level, shipping_costs)) +
+  geom_hex() +
+  labs(title = "Cost vs Traffic (Hexbin Density)")
+```
+
+```{r}
+num_df <- df %>% select(where(is.numeric))
+cor_mat <- cor(num_df, use = "pairwise.complete.obs")
+corrplot(cor_mat, method = "color", tl.cex = 0.6, mar = c(0,0,1,0), title = "Correlation Heatmap")
+```
+
+```{r}
+df_roll <- df_daily %>%
+  arrange(date) %>%
+  group_by(risk_classification) %>%
+  mutate(cost_7d = zoo::rollmean(shipping_costs, 7, fill = NA, align = "right"),
+         dev_7d  = zoo::rollmean(delivery_time_deviation, 7, fill = NA, align = "right")) %>%
+  ungroup()
+
+ggplot(df_roll, aes(date, cost_7d, color = risk_classification)) +
+  geom_line() + labs(title = "7-day Rolling Shipping Cost")
+
+```
+
+```{r}
+ggplot(df_roll, aes(date, dev_7d, color = risk_classification)) +
+  geom_line() + labs(title = "7-day Rolling Delivery Deviation")
+```
+
+```{r}
+fit <- lm(shipping_costs ~ traffic_congestion_level + port_congestion_level +
+            weather_condition_severity + warehouse_inventory_level +
+            supplier_reliability_score + route_risk_level +
+            customs_clearance_time + loading_unloading_time,
+          data = df)
+summary(fit)
+```
+
+```{r}
+# Quintiles for congestion (0 bucket for NA)
+df_hier_keys <- df %>%
+  mutate(
+    date = as.Date(timestamp),
+    congestion_band = ntile(traffic_congestion_level, 5),
+    congestion_band = if_else(is.na(congestion_band), 0L, congestion_band)
+  )
+
+daily_hier <- df_hier_keys %>%
+  group_by(date, risk_classification, congestion_band) %>%
+  summarise(shipping_costs = sum(shipping_costs, na.rm = TRUE), .groups = "drop")
+
+tsib <- daily_hier %>%
+  as_tsibble(key = c(risk_classification, congestion_band), index = date)
+
+hier <- tsib %>%
+  aggregate_key(risk_classification/congestion_band,
+                shipping_costs = sum(shipping_costs, na.rm = TRUE))
+
+# Fill gaps and zero-fill costs (additive series)
+hier_full <- hier %>%
+  fill_gaps() %>%
+  replace_na(list(shipping_costs = 0))
+
+has_gaps(hier_full)  # should be FALSE
+```
+
+```{r}
+cutoff <- as.Date(max(hier_full$date)) - h
+train  <- hier_full %>% filter(date <= cutoff)
+test   <- hier_full %>% filter(date >  cutoff)
+h <- 30
+cutoff <- max(hier_full$date) - h
+
+train <- hier_full %>% filter(date <= cutoff)
+test  <- hier_full %>% filter(date >  cutoff)
+
+base_fit <- train %>%
+  model(ETS = ETS(shipping_costs))
+
+base_fit
+```
+
+```{r}
+fc <- base_fit %>%
+  reconcile(
+    BU  = bottom_up(ETS),
+    OLS = min_trace(ETS, method = "ols"),
+    WLS = min_trace(ETS, method = "wls_var") # stable WLS
+  ) %>%
+  forecast(h = h)
+
+fc
+```
+
+```{r}
+total_hist <- train %>%
+  filter(is_aggregated(risk_classification), is_aggregated(congestion_band))
+total_fc <- fc %>%
+  filter(is_aggregated(risk_classification), is_aggregated(congestion_band))
+
+autoplot(bind_rows(total_hist, test), shipping_costs) +
+  autolayer(total_fc, level = NULL) +
+  labs(title = "Total Shipping Costs – Reconciled Forecasts", y = "Cost")
+```
+
+```{r}
+# Accuracy summary
+acc <- accuracy(fc, test) %>%
+  group_by(.model) %>%
+  summarise(MAPE = mean(MAPE, na.rm = TRUE),
+            RMSE = mean(RMSE, na.rm = TRUE), .groups = "drop") %>%
+  arrange(MAPE)
+acc
+```
+
+```{r}
+# Coherence check on first forecast day
+recon_tbl <- fc %>% as_tibble()
+
+first_day <- recon_tbl %>% summarise(first = min(date)) %>% pull(first)
+
+totals <- recon_tbl %>%
+  filter(date == first_day,
+         is_aggregated(risk_classification),
+         is_aggregated(congestion_band)) %>%
+  select(.model, total = .mean)
+
+sum_parts <- recon_tbl %>%
+  filter(date == first_day,
+         !is_aggregated(risk_classification),
+         is_aggregated(congestion_band)) %>%
+  group_by(.model) %>%
+  summarise(sum_states = sum(.mean), .groups = "drop")
+
+left_join(totals, sum_parts, by = ".model") %>%
+  mutate(diff_total_minus_states = round(total - sum_states))
+```
+
+```{r}
+```
+
+```{r}
+acc_mape_nz <- accuracy(fc, test %>% filter(shipping_costs > 0)) %>%
+  dplyr::group_by(.model) %>%
+  dplyr::summarise(MAPE = mean(MAPE, na.rm = TRUE),
+                   RMSE = mean(RMSE, na.rm = TRUE)) %>%
+  dplyr::arrange(MAPE)
+acc_mape_nz
+```
+
+```{r}
+acc_robust <- accuracy(fc, test) %>%
+  dplyr::group_by(.model) %>%
+  dplyr::summarise(
+    MAPE = mean(MAPE, na.rm = TRUE),
+    MASE = mean(MASE, na.rm = TRUE),
+    RMSE = mean(RMSE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(MAPE)
+
+acc_robust
+```
+
+```{r}
+colnames(accuracy(fc, test))
+```
+
+```{r}
+preds <- fc %>% as_tibble() %>%
+  dplyr::select(date, risk_classification, congestion_band, .model, .mean)
+
+acts  <- test %>% as_tibble() %>%
+  dplyr::select(date, risk_classification, congestion_band, shipping_costs)
+
+joined <- dplyr::left_join(preds, acts,
+  by = c("date","risk_classification","congestion_band"))
+
+wape_tbl <- joined %>%
+  dplyr::group_by(.model) %>%
+  dplyr::summarise(
+    WAPE = 100 * sum(abs(shipping_costs - .mean), na.rm = TRUE) /
+                 pmax(sum(shipping_costs, na.rm = TRUE), 1e-9)  # epsilon guard
+  )
+wape_tbl
+```
+
+```{r}
+acc_total <- accuracy(
+  fc   %>% filter(is_aggregated(risk_classification), is_aggregated(congestion_band)),
+  test %>% filter(is_aggregated(risk_classification), is_aggregated(congestion_band))
+) %>%
+  dplyr::group_by(.model) %>%
+  dplyr::summarise(
+    MAPE = mean(MAPE, na.rm = TRUE),
+    MASE = mean(MASE, na.rm = TRUE),
+    RMSE = mean(RMSE, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(MAPE)
+
+acc_total
+```
+
+```{r}
+# totals (history and forecasts)
+pred_tot <- fc %>%
+  filter(is_aggregated(risk_classification), is_aggregated(congestion_band)) %>%
+  as_tibble() %>%
+  select(date, .model, .mean)
+
+act_tot <- test %>%
+  filter(is_aggregated(risk_classification), is_aggregated(congestion_band)) %>%
+  as_tibble() %>%
+  select(date, shipping_costs)
+
+joined_tot <- dplyr::left_join(pred_tot, act_tot, by = "date")
+
+smape_tbl <- joined_tot %>%
+  dplyr::group_by(.model) %>%
+  dplyr::summarise(
+    sMAPE = 200 * mean(abs(.mean - shipping_costs) /
+                       pmax(abs(shipping_costs) + abs(.mean), 1e-9), # guard
+                       na.rm = TRUE),
+    .groups = "drop"
+  )
+
+smape_tbl
+```
+
+```{r}
+wape_tot <- joined_tot %>%
+  dplyr::group_by(.model) %>%
+  dplyr::summarise(
+    WAPE = 100 * sum(abs(shipping_costs - .mean), na.rm = TRUE) /
+                 pmax(sum(shipping_costs, na.rm = TRUE), 1e-9),
+    .groups = "drop"
+  )
+wape_tot
+```
+
+```{r}
+library(fabletools)
+
+# Rolling origin cross-validation (e.g., 4 folds, 30-day horizon)
+h <- 30
+cv_sets <- hier_full %>%
+  stretch_tsibble(.init = 365, .step = h)  # 1st year train, slide by h
+
+# Fit models for each fold
+cv_fit <- cv_sets %>%
+  model(ETS = ETS(shipping_costs)) %>%
+  reconcile(
+    BU  = bottom_up(ETS),
+    OLS = min_trace(ETS, method = "ols"),
+    WLS = min_trace(ETS, method = "wls_var")
+  ) %>%
+  forecast(h = h)
+
+# Accuracy evaluation
+cv_acc <- accuracy(cv_fit, cv_sets) %>%    # <- no filter_key, just pass both
+  dplyr::group_by(.model) %>%
+  dplyr::summarise(RMSE  = mean(RMSE,  na.rm = TRUE),
+                   MASE  = mean(MASE,  na.rm = TRUE),
+                   sMAPE = mean(sMAPE, na.rm = TRUE),
+                   .groups = "drop") %>%
+  dplyr::arrange(RMSE)
+
+cv_acc
+```
+
+```{r}
+# Residuals from the fitted ETS (train split)
+resid_tbl <- augment(base_fit) %>% as_tibble()
+
+# ACF/PACF style display of residuals per key
+autoplot(resid_tbl, .innov) + labs(title = "Innovations over time")
+
+# Ljung-Box test aggregated
+resid_tests <- resid_tbl %>%
+  group_by(risk_classification, congestion_band) %>%
+  summarise(p_box = Box.test(.innov, lag = 24, type = "Ljung-Box")$p.value,
+            .groups = "drop")
+resid_tests %>% arrange(p_box)
+```
+
+```{r}
+mk_lags <- function(x) dplyr::lag(x, 1)  # simple 1-day lag
+
+train_x <- hier_full %>%
+  filter(date <= cutoff) %>%
+  mutate(
+    dow   = wday(date, label = TRUE),
+    month = month(date, label = TRUE),
+    tcl   = mk_lags(traffic_congestion_level),
+    pcl   = mk_lags(port_congestion_level),
+    wcs   = mk_lags(weather_condition_severity)
+  )
+
+future_x <- hier_full %>%
+  filter(date > cutoff) %>%
+  mutate(
+    dow   = wday(date, label = TRUE),
+    month = month(date, label = TRUE),
+    tcl   = traffic_congestion_level,
+    pcl   = port_congestion_level,
+    wcs   = weather_condition_severity
+  ) %>%
+  select(date, risk_classification, congestion_band, dow, month, tcl, pcl, wcs)
+
+xreg_fit <- train_x %>%
+  model(
+    ARIMAX = ARIMA(shipping_costs ~ dow + month + tcl + pcl + wcs),
+    TSLMX  = TSLM(shipping_costs ~ trend() + season("year") + dow + month + tcl + pcl + wcs)
+  ) %>%
+  reconcile(
+    BU  = bottom_up(ARIMAX, TSLMX),
+    OLS = min_trace(ARIMAX, TSLMX, method = "ols"),
+    WLS = min_trace(ARIMAX, TSLMX, method = "wls_var")
+  )
+
+fc_x <- xreg_fit %>% forecast(new_data = future_x)
+
+acc_x <- accuracy(fc_x, test) %>%
+  group_by(.model) %>%
+  summarise(RMSE = mean(RMSE, na.rm = TRUE), sMAPE = mean(sMAPE, na.rm = TRUE),
+            .groups = "drop") %>%
+  arrange(RMSE)
+acc_x
+```
+
+```{r}
+# Try MinT with shrinkage (if your fabletools supports it)
+fc_shrink <- base_fit %>%
+  reconcile(MINT = min_trace(ETS, method = "mint_shrink")) %>%
+  forecast(h = h)
+
+accuracy(fc_shrink, test) %>%
+  group_by(.model) %>%
+  summarise(RMSE = mean(RMSE, na.rm = TRUE)) %>%
+  arrange(RMSE)
+```
+
+```{r}
+# Default fable models produce distributions; evaluate coverage
+ivl <- fc %>% hilo(level = c(80, 95)) %>% as_tibble()
+
+# Empirical coverage on test
+cov_tbl <- accuracy(fc, test, measures = list(
+  CRPS = crps,    # continuous ranked prob. score
+  Coverage80 = coverage(level = 80),
+  Coverage95 = coverage(level = 95)
+)) %>%
+  group_by(.model) %>%
+  summarise(CRPS = mean(CRPS, na.rm = TRUE),
+            Cov80 = mean(Coverage80, na.rm = TRUE),
+            Cov95 = mean(Coverage95, na.rm = TRUE))
+cov_tbl
+```
+
+```{r}
+safe_accuracy <- function(fcast, actual){
+  accuracy(fcast, actual) %>%
+    mutate(MAPE = ifelse(is.infinite(MAPE), NA_real_, MAPE))
+}
+```
+
+```{r}
+# Suppose you have total RMSE from CV for ETS/ARIMA/TSLM:
+w <- tibble(base = c("ETS","ARIMA","TSLM"), RMSE = c(860, 845, 872))
+w <- w %>% mutate(weight = (1/RMSE) / sum(1/RMSE))
+
+# Build weighted ensemble forecasts at TOTAL (by BU/OLS/WLS label)
+tot_ets   <- res_ets$fc   %>% filter(is_aggregated(risk_classification), is_aggregated(congestion_band)) %>% as_tibble() %>% select(date, .model, .mean) %>% mutate(base="ETS")
+tot_arima <- res_arima$fc %>% filter(is_aggregated(risk_classification), is_aggregated(congestion_band)) %>% as_tibble() %>% select(date, .model, .mean) %>% mutate(base="ARIMA")
+tot_tslm  <- res_tslm$fc  %>% filter(is_aggregated(risk_classification), is_aggregated(congestion_band)) %>% as_tibble() %>% select(date, .model, .mean) %>% mutate(base="TSLM")
+
+tot_all <- bind_rows(tot_ets, tot_arima, tot_tslm) %>%
+  left_join(w, by="base")
+
+tot_wens <- tot_all %>%
+  group_by(date, .model) %>%
+  summarise(.mean = sum(.mean * weight, na.rm = TRUE), .groups = "drop") %>%
+  mutate(.model = paste0("WENS_", .model))
+
+# Evaluate weighted ensemble
+act_tot <- test %>% filter(is_aggregated(risk_classification), is_aggregated(congestion_band)) %>% as_tibble() %>% select(date, shipping_costs)
+acc_wens <- left_join(tot_wens, act_tot, by="date") %>%
+  group_by(.model) %>%
+  summarise(RMSE = sqrt(mean((.mean - shipping_costs)^2, na.rm = TRUE)),
+            WAPE = 100 * sum(abs(.mean - shipping_costs), na.rm = TRUE) / pmax(sum(shipping_costs, na.rm = TRUE), 1e-9))
+acc_wens
+```
+
+```{r}
+# Example: expected annualized savings from better forecast (delta RMSE)
+delta_rmse <- (acc_total %>% filter(.model == "WLS") %>% pull(RMSE)) -
+              (acc_wens %>% pull(RMSE))
+# Suppose $k cost per unit error per day:
+k <- 2.5
+savings_est <- delta_rmse * k * 365
+savings_est
+```
+
+```{r}
+best_total <- acc_total %>% arrange(RMSE) %>% slice(1)
+best_total
+# capture: model, RMSE, MASE, sMAPE, reconciliation method
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+
